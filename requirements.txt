@@ -1,0 +1,8 @@
+streamlit
+torch
+transformers
+datasets
+spacy
+pandas
+graphviz
+Pillow
