@@ -1,10 +1,7 @@
-streamlit
-torch
-transformers
+streamlit>=1.38
+transformers>=4.44
+torch>=2.3
 datasets
 spacy
-pandas
 graphviz
-Pillow
-spacy==3.7.5
-en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
+pillow
