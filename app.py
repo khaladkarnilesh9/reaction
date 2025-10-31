@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import re
-from graphviz import Digraph
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 # -------------------------------
 # 1️⃣ Stage keywords
@@ -74,40 +74,51 @@ def parse_reaction(text):
         })
 
     df = pd.DataFrame(results)
-
-    dot = Digraph(comment='Reaction Flow', format='png')
-    for r in results:
-        label = f"Step {r['Step']}\n{r['Stage']} → {r['Sub-Stage']}"
-        dot.node(str(r['Step']), label)
-    for i in range(len(results) - 1):
-        dot.edge(str(results[i]['Step']), str(results[i+1]['Step']))
-    dot.render('reaction_flow', cleanup=True)
-
-    return df, 'reaction_flow.png'
+    return df
 
 # -------------------------------
-# 5️⃣ Streamlit UI
+# 5️⃣ Flow diagram (image-based)
+# -------------------------------
+def create_flow_image(df):
+    width, height = 800, 100 + 80 * len(df)
+    img = Image.new("RGB", (width, height), color=(250, 250, 250))
+    draw = ImageDraw.Draw(img)
+
+    y = 50
+    for _, row in df.iterrows():
+        text = f"Step {row['Step']}: {row['Stage']} → {row['Sub-Stage']}"
+        draw.rectangle([(50, y), (750, y + 50)], fill=(220, 240, 255), outline=(100, 100, 100))
+        draw.text((60, y + 15), text, fill=(0, 0, 0))
+        y += 80
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+# -------------------------------
+# 6️⃣ Streamlit UI
 # -------------------------------
 st.set_page_config(page_title="Light Reaction Parser", layout="wide")
-
-st.title("🧪 Lightweight Reaction Parser")
-st.write("No heavy AI models — fast, offline, and data-friendly!")
+st.title("🧪 Lightweight Reaction Parser (No Graphviz)")
 
 user_input = st.text_area("✍️ Enter Reaction Procedure", height=200)
 
 if st.button("Analyze"):
     if user_input.strip():
-        df, graph_path = parse_reaction(user_input)
+        df = parse_reaction(user_input)
         st.success("✅ Parsed Successfully!")
 
         st.subheader("📋 Parsed Steps")
         st.dataframe(df, use_container_width=True)
 
         st.subheader("🔗 Reaction Flow Diagram")
-        st.image(Image.open(graph_path), caption="Reaction Flow Diagram", use_column_width=True)
+        flow_image = create_flow_image(df)
+        st.image(flow_image, caption="Reaction Flow Diagram", use_column_width=True)
 
-        st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode("utf-8"), "reaction_parsed.csv", "text/csv")
+        st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode("utf-8"),
+                           "reaction_parsed.csv", "text/csv")
     else:
         st.warning("Please enter some text first!")
 
-st.caption("⚡ Offline version — no model downloads required.")
+st.caption("⚡ Offline, lightweight, and mobile-data friendly!")
