@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 import re, spacy, pandas as pd, json
 from transformers import BertTokenizerFast, BertForSequenceClassification
-from datasets import Dataset
 from graphviz import Digraph
 from PIL import Image
 
@@ -199,3 +198,4 @@ if st.button("Analyze Reaction"):
 
 st.markdown("---")
 st.caption("Developed with ❤️ using Streamlit, TinyBERT, and SpaCy.")
+
