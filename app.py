@@ -1,24 +1,23 @@
 import streamlit as st
 import torch
 import torch.nn.functional as F
-import re, spacy, pandas as pd, json
+import re, spacy, pandas as pd, json, subprocess, sys
 from transformers import BertTokenizerFast, BertForSequenceClassification
 from graphviz import Digraph
 from PIL import Image
 
-# -------------------------------
+# ---------------------------------------
 # ⚙️ Streamlit Page Config
-# -------------------------------
+# ---------------------------------------
 st.set_page_config(page_title="Chemical Stage Parser", page_icon="🧪", layout="wide")
-
 st.info("⏳ Initializing app... please wait a few seconds while models load...")
 
-# -------------------------------
+# ---------------------------------------
 # ⚡ Cached Resource Loaders
-# -------------------------------
+# ---------------------------------------
 @st.cache_resource
 def load_model():
-    """Load a small transformer model (cached)."""
+    """Load and cache a small transformer model."""
     tokenizer = BertTokenizerFast.from_pretrained("prajjwal1/bert-tiny")
     model = BertForSequenceClassification.from_pretrained(
         "prajjwal1/bert-tiny",
@@ -31,7 +30,6 @@ def load_model():
 @st.cache_resource
 def load_spacy():
     """Load SpaCy English model (auto-download if missing)."""
-    import subprocess, sys
     try:
         return spacy.load("en_core_web_sm")
     except OSError:
@@ -39,11 +37,14 @@ def load_spacy():
         subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
         return spacy.load("en_core_web_sm")
 
-# -------------------------------
+# ✅ Load model + tokenizer + SpaCy now
+tokenizer, model = load_model()
+nlp = load_spacy()
+
+# ---------------------------------------
 # 📚 Setup
-# -------------------------------
+# ---------------------------------------
 labels = ["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"]
-label2id = {l: i for i, l in enumerate(labels)}
 id2label = {i: l for i, l in enumerate(labels)}
 
 substage_keywords = {
@@ -54,14 +55,15 @@ substage_keywords = {
     "Analysis": {"nmr": "NMR", "ir": "IR", "ms": "Mass Spectrometry"}
 }
 
-# -------------------------------
+# ---------------------------------------
 # 🧠 NLP Helpers
-# -------------------------------
+# ---------------------------------------
 def extract_entities(sentence):
     doc = nlp(sentence)
     entities = {}
     for ent in doc.ents:
         entities.setdefault(ent.label_, []).append(ent.text)
+
     temp = re.findall(r"\d+\s?°C", sentence)
     amt = re.findall(r"\d+(?:\.\d+)?\s?(?:g|mg|mL|L|mol)", sentence)
     time = re.findall(r"\d+\s?(?:h|hour|hours|min|minutes)", sentence)
@@ -78,9 +80,9 @@ def detect_substage(stage, sentence):
                 return v
     return "General"
 
-# -------------------------------
-# 🧩 Parser
-# -------------------------------
+# ---------------------------------------
+# 🔍 Reaction Parser
+# ---------------------------------------
 def parse_reaction(text):
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     if not sentences:
@@ -125,9 +127,9 @@ def parse_reaction(text):
     graph_path = dot.render('reaction_flow', cleanup=True)
     return df, results, graph_path
 
-# -------------------------------
+# ---------------------------------------
 # 🌈 UI
-# -------------------------------
+# ---------------------------------------
 theme_choice = st.sidebar.radio("🌗 Theme", ["Dark", "Light"], index=0)
 dark_mode = theme_choice == "Dark"
 
@@ -136,7 +138,7 @@ fg = "#f9fafb" if dark_mode else "#0f172a"
 accent = "#38bdf8"
 
 st.markdown(
-    f"<h3 style='color:{fg};margin-top:1rem;'>Chemical Reaction Stage + Sub-Stage Parser (Fast Mode)</h3>",
+    f"<h3 style='color:{fg};margin-top:1rem;'>🧪 Chemical Reaction Stage + Sub-Stage Parser</h3>",
     unsafe_allow_html=True
 )
 
@@ -157,9 +159,9 @@ with col2:
             df_uploaded = pd.read_csv(uploaded_file)
             user_input = " ".join(df_uploaded.iloc[:, 0].astype(str).tolist())
 
-# -------------------------------
+# ---------------------------------------
 # 🧮 Run Parser
-# -------------------------------
+# ---------------------------------------
 if st.button("Analyze Reaction"):
     if user_input.strip():
         with st.spinner("🔍 Parsing your procedure..."):
@@ -196,5 +198,3 @@ if st.button("Analyze Reaction"):
 
 st.markdown("---")
 st.caption("Developed with ❤️ using Streamlit, TinyBERT, and SpaCy.")
-
-
