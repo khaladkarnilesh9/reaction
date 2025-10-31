@@ -1,10 +1,11 @@
 import streamlit as st
-import torch, re, spacy, pandas as pd, json
+import torch
+import torch.nn.functional as F
+import re, spacy, pandas as pd, json
 from transformers import BertTokenizerFast, BertForSequenceClassification
 from datasets import Dataset
 from graphviz import Digraph
 from PIL import Image
-from io import StringIO
 
 # -------------------------------
 # 1️⃣ Setup labels & model
@@ -29,8 +30,9 @@ data = {
     ]
 }
 
+# Manual encoding for compatibility
+data["label_id"] = [label2id[l] for l in data["label"]]
 dataset = Dataset.from_dict(data)
-dataset = dataset.class_encode_column("label")
 
 tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
 
@@ -50,7 +52,11 @@ model = BertForSequenceClassification.from_pretrained(
 # -------------------------------
 # 2️⃣ NLP setup
 # -------------------------------
-nlp = spacy.load("en_core_web_sm")
+try:
+    nlp = spacy.load("en_core_web_sm")
+except OSError:
+    st.error("SpaCy model 'en_core_web_sm' not found. Please run: `python -m spacy download en_core_web_sm`")
+    st.stop()
 
 def extract_entities(sentence):
     doc = nlp(sentence)
@@ -113,11 +119,10 @@ def parse_reaction(text):
     for r in results:
         label = f"Step {r['Step']}\n{r['Stage']} → {r['Sub-Stage']}\n{r['Sentence']}"
         dot.node(str(r['Step']), label)
-    for i in range(len(results)-1):
-        dot.edge(str(results[i]['Step']), str(results[i+1]['Step']))
+    for i in range(len(results) - 1):
+        dot.edge(str(results[i]['Step']), str(results[i + 1]['Step']))
     
-    graph_path = 'reaction_flow.png'
-    dot.render('reaction_flow', cleanup=True)
+    graph_path = dot.render('reaction_flow', cleanup=True)
     return df, results, graph_path
 
 # -------------------------------
@@ -195,10 +200,11 @@ with col2:
     uploaded_file = st.file_uploader("📂 Upload .txt or .csv file", type=["txt", "csv"])
     if uploaded_file:
         if uploaded_file.name.endswith(".txt"):
-            user_input = uploaded_file.read().decode("utf-8")
+            content = uploaded_file.read()
+            user_input = content.decode("utf-8") if isinstance(content, bytes) else content
         elif uploaded_file.name.endswith(".csv"):
             df_uploaded = pd.read_csv(uploaded_file)
-            user_input = " ".join(df_uploaded.iloc[:,0].astype(str).tolist())
+            user_input = " ".join(df_uploaded.iloc[:, 0].astype(str).tolist())
 
 # -------------------------------
 # 6️⃣ Processing
