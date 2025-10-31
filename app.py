@@ -8,56 +8,57 @@ from graphviz import Digraph
 from PIL import Image
 
 # -------------------------------
-# 1️⃣ Setup labels & model
+# 1️⃣ Streamlit Setup
+# -------------------------------
+st.set_page_config(page_title="Chemical Stage Parser", page_icon="🧪", layout="wide")
+
+st.info("⏳ Initializing app... please wait while model and NLP are loading...")
+
+# -------------------------------
+# 2️⃣ Cached Loaders (FAST STARTUP)
+# -------------------------------
+@st.cache_resource
+def load_model():
+    """Load tokenizer and model once (cached)."""
+    tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+    model = BertForSequenceClassification.from_pretrained(
+        "bert-base-uncased",
+        num_labels=6,
+        id2label={i: l for i, l in enumerate(["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"])},
+        label2id={l: i for i, l in enumerate(["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"])}
+    )
+    return tokenizer, model
+
+@st.cache_resource
+def load_spacy():
+    """Load SpaCy NLP model once (cached)."""
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError:
+        st.error("⚠️ SpaCy model 'en_core_web_sm' not found. Run: `python -m spacy download en_core_web_sm`")
+        st.stop()
+
+tokenizer, model = load_model()
+nlp = load_spacy()
+
+# -------------------------------
+# 3️⃣ Setup labels and helpers
 # -------------------------------
 labels = ["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"]
 label2id = {l: i for i, l in enumerate(labels)}
-id2label = {i: l for l, i in label2id.items()}
+id2label = {i: l for i, l in enumerate(labels)}
 
-data = {
-    "sentence": [
-        "Weigh 2 g of NaCl.",
-        "Dissolve NaCl in 50 mL of water.",
-        "Add ethanol and stir for 2 hours at 60°C.",
-        "Cool the reaction mixture to room temperature.",
-        "Filter the solid and dry under vacuum.",
-        "Purify the product by recrystallization.",
-        "Analyze the sample by NMR spectroscopy."
-    ],
-    "label": [
-        "Preparation", "Preparation", "Reaction", "Reaction",
-        "Work-up", "Purification", "Analysis"
-    ]
+substage_keywords = {
+    "Preparation": {"weigh": "Weighing", "dissolve": "Dissolution", "mix": "Mixing", "add": "Addition"},
+    "Reaction": {"heat": "Heating", "reflux": "Refluxing", "stir": "Stirring", "cool": "Cooling"},
+    "Work-up": {"filter": "Filtration", "wash": "Washing", "dry": "Drying", "extract": "Extraction"},
+    "Purification": {"recrystall": "Recrystallization", "column": "Chromatography"},
+    "Analysis": {"nmr": "NMR", "ir": "IR", "ms": "Mass Spectrometry"}
 }
 
-# Manual encoding for compatibility
-data["label_id"] = [label2id[l] for l in data["label"]]
-dataset = Dataset.from_dict(data)
-
-tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
-
-def tokenize(batch):
-    return tokenizer(batch["sentence"], padding=True, truncation=True)
-
-dataset = dataset.map(tokenize, batched=True)
-dataset = dataset.train_test_split(test_size=0.3)
-
-model = BertForSequenceClassification.from_pretrained(
-    "bert-base-uncased",
-    num_labels=len(labels),
-    id2label=id2label,
-    label2id=label2id
-)
-
 # -------------------------------
-# 2️⃣ NLP setup
+# 4️⃣ Entity Extractor
 # -------------------------------
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    st.error("SpaCy model 'en_core_web_sm' not found. Please run: `python -m spacy download en_core_web_sm`")
-    st.stop()
-
 def extract_entities(sentence):
     doc = nlp(sentence)
     entities = {}
@@ -71,14 +72,6 @@ def extract_entities(sentence):
     if time: entities["Duration"] = time
     return entities
 
-substage_keywords = {
-    "Preparation": {"weigh": "Weighing", "dissolve": "Dissolution", "mix": "Mixing", "add": "Addition"},
-    "Reaction": {"heat": "Heating", "reflux": "Refluxing", "stir": "Stirring", "cool": "Cooling"},
-    "Work-up": {"filter": "Filtration", "wash": "Washing", "dry": "Drying", "extract": "Extraction"},
-    "Purification": {"recrystall": "Recrystallization", "column": "Chromatography"},
-    "Analysis": {"nmr": "NMR", "ir": "IR", "ms": "Mass Spectrometry"}
-}
-
 def detect_substage(stage, sentence):
     sentence_lower = sentence.lower()
     if stage in substage_keywords:
@@ -88,7 +81,7 @@ def detect_substage(stage, sentence):
     return "General"
 
 # -------------------------------
-# 3️⃣ Parsing logic
+# 5️⃣ Core Parsing Logic
 # -------------------------------
 def parse_reaction(text):
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
@@ -99,38 +92,46 @@ def parse_reaction(text):
     with torch.no_grad():
         outputs = model(**inputs)
         preds = torch.argmax(outputs.logits, dim=1).tolist()
+        probs = F.softmax(outputs.logits, dim=1).tolist()
 
     results = []
     for i, (p, s) in enumerate(zip(preds, sentences)):
         stage = id2label[p]
         substage = detect_substage(stage, s)
         ents = extract_entities(s)
-        results.append({"Step": i+1, "Stage": stage, "Sub-Stage": substage, "Sentence": s, "Entities": ents})
+        confidence = round(max(probs[i]) * 100, 2)
+        results.append({
+            "Step": i + 1,
+            "Stage": stage,
+            "Sub-Stage": substage,
+            "Confidence (%)": confidence,
+            "Sentence": s,
+            "Entities": ents
+        })
 
     df = pd.DataFrame([{
         "Step": r["Step"],
         "Stage": r["Stage"],
         "Sub-Stage": r["Sub-Stage"],
+        "Confidence (%)": r["Confidence (%)"],
         "Sentence": r["Sentence"],
         "Entities": str(r["Entities"])
     } for r in results])
 
-    dot = Digraph(comment='Reaction Procedure Flow', format='png')
+    # Graphviz Diagram (SVG for faster rendering)
+    dot = Digraph(comment='Reaction Flow', format='svg')
     for r in results:
-        label = f"Step {r['Step']}\n{r['Stage']} → {r['Sub-Stage']}\n{r['Sentence']}"
+        label = f"Step {r['Step']}\n{r['Stage']} → {r['Sub-Stage']}\nConf: {r['Confidence (%)']}%"
         dot.node(str(r['Step']), label)
     for i in range(len(results) - 1):
         dot.edge(str(results[i]['Step']), str(results[i + 1]['Step']))
-    
+
     graph_path = dot.render('reaction_flow', cleanup=True)
     return df, results, graph_path
 
 # -------------------------------
-# 4️⃣ Streamlit UI
+# 6️⃣ UI Styling
 # -------------------------------
-st.set_page_config(page_title="Chemical Stage Parser", page_icon="🧪", layout="wide")
-
-# 🌈 Theme toggle
 theme_choice = st.sidebar.radio("🌗 Theme", ["Dark", "Light"], index=0)
 dark_mode = theme_choice == "Dark"
 
@@ -138,7 +139,6 @@ bg_color = "#0f172a" if dark_mode else "#f9fafb"
 text_color = "#f9fafb" if dark_mode else "#0f172a"
 accent_color = "#38bdf8"
 
-# 🧭 Navbar
 st.markdown(f"""
     <style>
     .navbar {{
@@ -182,12 +182,12 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 st.markdown(
-    f"<h3 style='color:{text_color};margin-top:1rem;'>Chemical Reaction Stage + Sub-Stage Parser with Flow Diagram</h3>",
+    f"<h3 style='color:{text_color};margin-top:1rem;'>Chemical Reaction Stage + Sub-Stage Parser (FAST MODE)</h3>",
     unsafe_allow_html=True
 )
 
 # -------------------------------
-# 5️⃣ Input section
+# 7️⃣ Input Section
 # -------------------------------
 st.write("You can either type a reaction procedure or upload a file:")
 
@@ -207,12 +207,13 @@ with col2:
             user_input = " ".join(df_uploaded.iloc[:, 0].astype(str).tolist())
 
 # -------------------------------
-# 6️⃣ Processing
+# 8️⃣ Processing & Output
 # -------------------------------
 if st.button("Analyze Reaction"):
     if user_input.strip():
-        with st.spinner("🔍 Parsing your procedure..."):
+        with st.spinner("🔍 Parsing your procedure... please wait..."):
             df, results, graph_path = parse_reaction(user_input)
+
         if df is not None:
             st.success("✅ Parsing Complete!")
 
@@ -233,9 +234,8 @@ if st.button("Analyze Reaction"):
                 mime="application/json"
             )
 
-            st.subheader("🔗 Reaction Flow Diagram")
-            image = Image.open(graph_path)
-            st.image(image, caption="Reaction Flow Diagram", use_column_width=True)
+            st.subheader("🔗 Reaction Flow Diagram (SVG)")
+            st.image(graph_path, caption="Reaction Flow Diagram", use_column_width=True)
 
             st.subheader("🧠 JSON Output")
             st.json(results)
