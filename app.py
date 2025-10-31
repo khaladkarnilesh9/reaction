@@ -29,17 +29,10 @@ def load_model():
 
 @st.cache_resource
 def load_spacy():
-    """Load SpaCy English model (auto-download if missing)."""
-    try:
-        return spacy.load("en_core_web_sm")
-    except OSError:
-        st.warning("⚙️ Downloading SpaCy English model... (first run only)")
-        subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
-        return spacy.load("en_core_web_sm")
+    """Load SpaCy English model (already preinstalled via requirements)."""
+    import en_core_web_sm
+    return en_core_web_sm.load()
 
-# ✅ Load model + tokenizer + SpaCy now
-tokenizer, model = load_model()
-nlp = load_spacy()
 
 # ---------------------------------------
 # 📚 Setup
@@ -198,3 +191,4 @@ if st.button("Analyze Reaction"):
 
 st.markdown("---")
 st.caption("Developed with ❤️ using Streamlit, TinyBERT, and SpaCy.")
+
