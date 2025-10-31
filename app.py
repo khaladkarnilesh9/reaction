@@ -1,62 +1,33 @@
 import streamlit as st
-import torch
-import torch.nn.functional as F
-import re, spacy, pandas as pd, json, subprocess, sys
-from transformers import BertTokenizerFast, BertForSequenceClassification
+import pandas as pd
+import re
 from graphviz import Digraph
 from PIL import Image
 
-# ---------------------------------------
-# ⚙️ Streamlit Page Config
-# ---------------------------------------
-st.set_page_config(page_title="Chemical Stage Parser", page_icon="🧪", layout="wide")
-st.info("⏳ Initializing app... please wait a few seconds while models load...")
-
-# ---------------------------------------
-# ⚡ Cached Resource Loaders
-# ---------------------------------------
-@st.cache_resource
-def load_model():
-    """Load and cache a small transformer model."""
-    tokenizer = BertTokenizerFast.from_pretrained("prajjwal1/bert-tiny")
-    model = BertForSequenceClassification.from_pretrained(
-        "prajjwal1/bert-tiny",
-        num_labels=6,
-        id2label={i: l for i, l in enumerate(["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"])},
-        label2id={l: i for i, l in enumerate(["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"])}
-    )
-    return tokenizer, model
-
-@st.cache_resource
-def load_spacy():
-    """Load SpaCy English model (already preinstalled via requirements)."""
-    import en_core_web_sm
-    return en_core_web_sm.load()
-
-
-# ---------------------------------------
-# 📚 Setup
-# ---------------------------------------
-labels = ["Preparation", "Reaction", "Work-up", "Purification", "Analysis", "Other"]
-id2label = {i: l for i, l in enumerate(labels)}
-
-substage_keywords = {
-    "Preparation": {"weigh": "Weighing", "dissolve": "Dissolution", "mix": "Mixing", "add": "Addition"},
-    "Reaction": {"heat": "Heating", "reflux": "Refluxing", "stir": "Stirring", "cool": "Cooling"},
-    "Work-up": {"filter": "Filtration", "wash": "Washing", "dry": "Drying", "extract": "Extraction"},
-    "Purification": {"recrystall": "Recrystallization", "column": "Chromatography"},
-    "Analysis": {"nmr": "NMR", "ir": "IR", "ms": "Mass Spectrometry"}
+# -------------------------------
+# 1️⃣ Stage keywords
+# -------------------------------
+stage_keywords = {
+    "Preparation": ["weigh", "dissolve", "mix", "add"],
+    "Reaction": ["heat", "reflux", "stir", "cool", "react"],
+    "Work-up": ["filter", "wash", "dry", "extract"],
+    "Purification": ["recrystall", "column", "purify"],
+    "Analysis": ["nmr", "ir", "analy", "test"],
 }
 
-# ---------------------------------------
-# 🧠 NLP Helpers
-# ---------------------------------------
-def extract_entities(sentence):
-    doc = nlp(sentence)
-    entities = {}
-    for ent in doc.ents:
-        entities.setdefault(ent.label_, []).append(ent.text)
+substage_keywords = {
+    "Preparation": {"weigh": "Weighing", "dissolve": "Dissolution", "add": "Addition"},
+    "Reaction": {"stir": "Stirring", "heat": "Heating", "cool": "Cooling"},
+    "Work-up": {"filter": "Filtration", "dry": "Drying"},
+    "Purification": {"recrystall": "Recrystallization"},
+    "Analysis": {"nmr": "NMR", "ir": "IR"},
+}
 
+# -------------------------------
+# 2️⃣ Entity extraction (regex)
+# -------------------------------
+def extract_entities(sentence):
+    entities = {}
     temp = re.findall(r"\d+\s?°C", sentence)
     amt = re.findall(r"\d+(?:\.\d+)?\s?(?:g|mg|mL|L|mol)", sentence)
     time = re.findall(r"\d+\s?(?:h|hour|hours|min|minutes)", sentence)
@@ -64,6 +35,16 @@ def extract_entities(sentence):
     if amt: entities["Amount"] = amt
     if time: entities["Duration"] = time
     return entities
+
+# -------------------------------
+# 3️⃣ Rule-based classification
+# -------------------------------
+def detect_stage(sentence):
+    sentence_lower = sentence.lower()
+    for stage, keys in stage_keywords.items():
+        if any(k in sentence_lower for k in keys):
+            return stage
+    return "Other"
 
 def detect_substage(stage, sentence):
     sentence_lower = sentence.lower()
@@ -73,122 +54,60 @@ def detect_substage(stage, sentence):
                 return v
     return "General"
 
-# ---------------------------------------
-# 🔍 Reaction Parser
-# ---------------------------------------
+# -------------------------------
+# 4️⃣ Main parsing logic
+# -------------------------------
 def parse_reaction(text):
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
-    if not sentences:
-        return None, None, None
-
-    inputs = tokenizer(sentences, padding=True, truncation=True, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model(**inputs)
-        preds = torch.argmax(outputs.logits, dim=1).tolist()
-        probs = F.softmax(outputs.logits, dim=1).tolist()
-
     results = []
-    for i, (p, s) in enumerate(zip(preds, sentences)):
-        stage = id2label[p]
+
+    for i, s in enumerate(sentences, 1):
+        stage = detect_stage(s)
         substage = detect_substage(stage, s)
         ents = extract_entities(s)
-        conf = round(max(probs[i]) * 100, 2)
         results.append({
-            "Step": i + 1,
+            "Step": i,
             "Stage": stage,
             "Sub-Stage": substage,
-            "Confidence (%)": conf,
             "Sentence": s,
-            "Entities": ents
+            "Entities": str(ents)
         })
 
-    df = pd.DataFrame([{
-        "Step": r["Step"],
-        "Stage": r["Stage"],
-        "Sub-Stage": r["Sub-Stage"],
-        "Confidence (%)": r["Confidence (%)"],
-        "Sentence": r["Sentence"],
-        "Entities": str(r["Entities"])
-    } for r in results])
+    df = pd.DataFrame(results)
 
-    dot = Digraph(comment='Reaction Flow', format='svg')
+    dot = Digraph(comment='Reaction Flow', format='png')
     for r in results:
-        label = f"Step {r['Step']}: {r['Stage']} → {r['Sub-Stage']}\\nConf: {r['Confidence (%)']}%"
+        label = f"Step {r['Step']}\n{r['Stage']} → {r['Sub-Stage']}"
         dot.node(str(r['Step']), label)
     for i in range(len(results) - 1):
-        dot.edge(str(results[i]['Step']), str(results[i + 1]['Step']))
-    graph_path = dot.render('reaction_flow', cleanup=True)
-    return df, results, graph_path
+        dot.edge(str(results[i]['Step']), str(results[i+1]['Step']))
+    dot.render('reaction_flow', cleanup=True)
 
-# ---------------------------------------
-# 🌈 UI
-# ---------------------------------------
-theme_choice = st.sidebar.radio("🌗 Theme", ["Dark", "Light"], index=0)
-dark_mode = theme_choice == "Dark"
+    return df, 'reaction_flow.png'
 
-bg = "#0f172a" if dark_mode else "#f9fafb"
-fg = "#f9fafb" if dark_mode else "#0f172a"
-accent = "#38bdf8"
+# -------------------------------
+# 5️⃣ Streamlit UI
+# -------------------------------
+st.set_page_config(page_title="Light Reaction Parser", layout="wide")
 
-st.markdown(
-    f"<h3 style='color:{fg};margin-top:1rem;'>🧪 Chemical Reaction Stage + Sub-Stage Parser</h3>",
-    unsafe_allow_html=True
-)
+st.title("🧪 Lightweight Reaction Parser")
+st.write("No heavy AI models — fast, offline, and data-friendly!")
 
-st.write("You can either type a reaction procedure or upload a file:")
+user_input = st.text_area("✍️ Enter Reaction Procedure", height=200)
 
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    user_input = st.text_area("✍️ Enter Reaction Procedure", height=200, placeholder="Type or paste your procedure here...")
-
-with col2:
-    uploaded_file = st.file_uploader("📂 Upload .txt or .csv file", type=["txt", "csv"])
-    if uploaded_file:
-        if uploaded_file.name.endswith(".txt"):
-            content = uploaded_file.read()
-            user_input = content.decode("utf-8") if isinstance(content, bytes) else content
-        elif uploaded_file.name.endswith(".csv"):
-            df_uploaded = pd.read_csv(uploaded_file)
-            user_input = " ".join(df_uploaded.iloc[:, 0].astype(str).tolist())
-
-# ---------------------------------------
-# 🧮 Run Parser
-# ---------------------------------------
-if st.button("Analyze Reaction"):
+if st.button("Analyze"):
     if user_input.strip():
-        with st.spinner("🔍 Parsing your procedure..."):
-            df, results, graph_path = parse_reaction(user_input)
-        if df is not None:
-            st.success("✅ Parsing Complete!")
+        df, graph_path = parse_reaction(user_input)
+        st.success("✅ Parsed Successfully!")
 
-            st.subheader("📋 Parsed Steps")
-            st.dataframe(df, use_container_width=True)
+        st.subheader("📋 Parsed Steps")
+        st.dataframe(df, use_container_width=True)
 
-            st.download_button(
-                "⬇️ Download CSV",
-                data=df.to_csv(index=False).encode('utf-8'),
-                file_name="reaction_parsed.csv",
-                mime="text/csv"
-            )
+        st.subheader("🔗 Reaction Flow Diagram")
+        st.image(Image.open(graph_path), caption="Reaction Flow Diagram", use_column_width=True)
 
-            st.download_button(
-                "⬇️ Download JSON",
-                data=json.dumps(results, indent=4).encode('utf-8'),
-                file_name="reaction_parsed.json",
-                mime="application/json"
-            )
-
-            st.subheader("🔗 Reaction Flow Diagram")
-            st.image(graph_path, caption="Reaction Flow Diagram", use_column_width=True)
-
-            st.subheader("🧠 JSON Output")
-            st.json(results)
-        else:
-            st.error("⚠️ No valid sentences found.")
+        st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode("utf-8"), "reaction_parsed.csv", "text/csv")
     else:
-        st.warning("Please provide a reaction procedure first!")
+        st.warning("Please enter some text first!")
 
-st.markdown("---")
-st.caption("Developed with ❤️ using Streamlit, TinyBERT, and SpaCy.")
-
+st.caption("⚡ Offline version — no model downloads required.")
